@@ -1,0 +1,541 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+#include "client.h"
+#include <Qdebug>
+#include <stdio.h>
+#include <QLayout>
+#include <QLabel>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <QDateTime>
+#include <QDir>
+#define MAXBUF 8191
+#define PORT_NUM 8279
+//8279
+SOCKET m_sockfd, sockfd, listenfd, connfd;
+struct sockaddr_in addr;
+char sentence[8192];
+int len;
+int p;
+PORT info;
+int PASV_mode = 1;
+FILE *fp;
+int port = 8279;
+char m_sentence[8192];
+char file_contents[8192];
+char ip_address[20] = "166.111.80.237";
+//char ip_address[20] = "123.206.96.15";
+WSADATA s;
+SOCKET ClientSocket;
+struct sockaddr_in ClientAddr;
+char SendBuffer[MAX_PATH];
+
+QVBoxLayout *serverlayout = new QVBoxLayout;
+QVBoxLayout *clientlayout = new QVBoxLayout;
+QLabel *server_list[10000];
+int filenum_server = 0;
+int filenum_client = 0;
+QLabel **client_list;
+
+
+void send_message(int socket,char* content){
+    memset(sentence,0,sizeof(sentence));
+    strcpy(sentence,content);
+    len = strlen(sentence) + 1;
+    sentence[len - 1] = '\r';
+    sentence[len] = '\n';
+    sentence[len + 1] = '\0';
+    len = strlen(sentence);
+    p = 0;
+    while (p < len) {
+        int n = send(sockfd, sentence, len,0);
+        if (n < 0) {
+            ("Error write(): %s(%d)\n", strerror(errno), errno);
+        }
+        else {
+            p += n;
+            break;
+        }
+    }
+//    p = 0;
+//    while (1) {
+//        int n = recv(sockfd, sentence, 8191,0);
+//        if (n < 0) {
+//            printf("Error read(): %s(%d)\n", strerror(errno), errno);
+//        }
+//        else {
+//            p += n;
+//            break;
+//        }
+//    }
+    sentence[p - 2] = '\0';
+    qDebug() << sentence;
+    if (!strncmp(sentence, "PORT", 4)) {
+        int _port[10];
+        divide_port(sentence, _port, 5);
+        PASV_mode = 0;
+        info.port = _port[4] * 256 + _port[5];
+        printf("port = %d\r\n", info.port);
+    }
+    else if (!strncmp(sentence, "STOR", 4)) {
+        if (PASV_mode == 0) {
+            listenfd = connect_server(info.port);
+            if ((connfd = accept(listenfd, NULL, NULL)) == -1) {
+                printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+            }
+            int n = recv(sockfd, m_sentence, 8191,0);
+            m_sentence[n - 2] = '\0';
+            qDebug()<<m_sentence;
+            get_info(sentence, 5);
+            fp = fopen(sentence, "rb");
+            while (!feof(fp)) {
+                len = fread(file_contents, 1, sizeof(file_contents), fp);
+                n = send(connfd, file_contents, len,0);
+            }
+            fclose(fp);
+            closesocket(listenfd);
+            closesocket(connfd);
+        }
+        else {
+            m_sockfd = connect_client(info.ip_address, info.port);
+            int n = recv(sockfd, m_sentence, 8191,0);
+            m_sentence[n - 2] = '\0';
+            qDebug()<<m_sentence;
+            get_info(sentence, 5);
+            fp = fopen(sentence, "rb");
+            while (!feof(fp)) {
+                len = fread(file_contents, 1, sizeof(file_contents), fp);
+                n = send(m_sockfd, file_contents, len,0);
+            }
+            fclose(fp);
+            closesocket(m_sockfd);
+        }
+    }
+    else if (!strncmp(sentence, "RETR", 4)) {
+        if (PASV_mode == 0) {
+            listenfd = connect_server(info.port);
+            if ((connfd = accept(listenfd, NULL, NULL)) == -1) {
+                printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+            }
+            int n = recv(sockfd, m_sentence, MAXBUF,0);
+            m_sentence[n - 2] = '\0';
+            qDebug()<<m_sentence;
+            get_info(sentence, 5);
+            fp = fopen(strcat("files/",sentence), "wb");
+            while (1) {
+                n = recv(connfd, file_contents, 8192,0);
+                if (n == 0) {
+                    break;
+                }
+                fwrite(file_contents, 1, n, fp);
+            }
+            fclose(fp);
+            closesocket(listenfd);
+            closesocket(connfd);
+        }
+        else {
+            m_sockfd = connect_client(info.ip_address, info.port);
+            int n = recv(sockfd, m_sentence, 8191,0);
+            m_sentence[n - 2] = '\0';
+            printf("%s\r\n", m_sentence);
+            get_info(sentence, 5);
+            printf("filename:%s", sentence);
+            fp = fopen(sentence, "wb");
+            while (1) {
+                n = recv(m_sockfd, file_contents, 8192,0);
+                if (n == 0) {
+                    break;
+                }
+                fwrite(file_contents, 1, n, fp);
+            }
+            fclose(fp);
+            closesocket(m_sockfd);
+        }
+    }
+    else if (!strncmp(sentence, "LIST", 4)) {
+            for(int i = 0; i < filenum_server; i++)
+                delete(server_list[i]);
+
+            filenum_server = 0;
+            m_sockfd = connect_client(info.ip_address, info.port);
+            while (1) {
+                memset(sentence, 0, sizeof(sentence));
+                int n = recv(m_sockfd, sentence, 8192,0);
+                if (n == 0) {
+                    memset(sentence, 0, sizeof(sentence));
+                    break;
+                }
+                QLabel *label = new QLabel(sentence);
+                server_list[filenum_server] = label;
+                filenum_server++;
+                serverlayout->addWidget(label);
+                qDebug()<<sentence;
+            }
+            int n = recv(sockfd, m_sentence, 8191, 0);
+
+            m_sentence[n - 2] = '\0';
+            qDebug()<<m_sentence;
+            closesocket(m_sockfd);
+    }
+    p = 0;
+    while (1) {
+        int n = recv(sockfd, sentence, 8191,0);
+        if (n < 0) {
+            printf("Error read(): %s(%d)\n", strerror(errno), errno);
+        }
+        else {
+            p += n;
+            break;
+        }
+    }
+    sentence[p - 2] = '\0';
+    qDebug() << sentence << endl;
+    if (!strncmp(sentence, "227", 3)) {
+        memset(info.ip_address, 0, sizeof(info.ip_address));
+        char ip[100];
+        int _port[10];
+        get_info(sentence, 26);
+        divide_port(sentence, _port, 1);
+        for (int i = 0; i < 3; i++) {
+            sprintf(ip, "%d", _port[i]);
+            strcat(info.ip_address, ip);
+            strcat(info.ip_address, ".");
+            memset(ip, 0, sizeof(ip));
+        }
+
+        sprintf(ip, "%d", _port[3]);
+        strcat(info.ip_address, ip);
+        PASV_mode = 1;
+        info.port = _port[4] * 256 + _port[5];
+        printf("ip_address = %s \r\nport = %d\r\n", info.ip_address, info.port);
+    }
+    else if (!strncmp(sentence, "221", 3)) {
+        closesocket(sockfd);
+    }
+}
+void reset_clientlist(){
+    QDir *dir = new QDir("files/");
+    dir->setFilter(QDir::NoDotAndDotDot|QDir::AllEntries);
+    qDebug() << dir->entryList();
+    for(int i = 0; i < filenum_client; i++)
+        delete(client_list[i]);
+
+    client_list = new QLabel*[dir->entryList().size()];
+    filenum_client = dir->entryList().size();
+    for(int i = 0; i < dir->entryList().size();i++){
+        char* filename;
+        char* filedate;
+        char directory[10] = {"files/"};
+        char fileinfo[100];
+        char filesize[100];
+        memset(fileinfo,0,sizeof(fileinfo));
+
+        filename = dir->entryList()[i].toLatin1().data();
+        strcat(directory,filename);
+        qDebug() << directory;
+        QFileInfo temp(directory);
+        qDebug() << filename <<" "<<temp.size();
+        filename = dir->entryList()[i].toLatin1().data();
+        strcat(fileinfo,filename);
+        strcat(fileinfo,"     ");
+        filedate = temp.lastModified().toString("yyyy-MM-dd hh:mm:ss").toLatin1().data();
+        strcat(fileinfo,filedate);
+        strcat(fileinfo,"     ");
+        itoa(temp.size(),filesize,10);
+        strcat(fileinfo,filesize);
+        strcat(fileinfo,"Bytes");
+        QLabel *label = new QLabel(fileinfo);
+        client_list[i] = label;
+        clientlayout->addWidget(label);
+    }
+}
+
+MainWindow::MainWindow(QWidget *parent) :
+    QMainWindow(parent),
+    ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    this->setCentralWidget(ui->stackedWidget);
+    ui->stackedWidget->setCurrentWidget(ui->RETR);
+    serverlayout->setContentsMargins(0,0,0,1);
+    clientlayout->setContentsMargins(0,0,0,1);
+    ui->servercontents->setLayout(serverlayout);
+    ui->clientcontents->setLayout(clientlayout);
+    if (WSAStartup(MAKEWORD(2, 2), &s) != 0)
+    {
+        printf("Init Windows Socket Failed! Error: %d\n", GetLastError());
+        getchar();
+    }
+    sockfd = connect_client(ip_address, PORT_NUM);
+    p = recv(sockfd, sentence, MAXBUF,0);
+    qDebug() << sentence;
+    send_message(sockfd,"USER cn2018");
+    send_message(sockfd,"PASS ftp");
+    send_message(sockfd,"PASV");
+    send_message(sockfd,"LIST");
+    reset_clientlist();
+
+//    DIR *dir;
+//    struct dirent *ptr;
+//    char *flow[1000];
+//    int num = 0, i = 0;
+
+//    if ((dir=opendir("/files")) == NULL)
+//    {
+//        perror("Open dir error...");
+//        exit(1);
+//    }
+//    // readdir() return next enter point of directory dir
+//    while ((ptr=readdir(dir)) != NULL)
+//    {
+//        flow[num] = (char*)malloc(sizeof(char));
+//        strcpy(flow[num], ptr->d_name);
+//        num++;
+//    }
+
+//    for(i = 0; i < num; i++)
+//    {
+//        qDebug() << flow[i];
+//    }
+
+//    closedir(dir);
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+void MainWindow::resizeEvent(QResizeEvent *event)//设置部件大小及坐标
+{
+    ui->scrollArea->setGeometry(50,100,450,400);
+    ui->scrollArea_2->setGeometry(520,100,450,400);
+    ui->label->setGeometry(50,520,60,20);
+    ui->label_2->setGeometry(520,520,60,20);
+    ui->clientinfo->setGeometry(520,80,150,20);
+    ui->inputfilename->setGeometry(110,520,160,20);
+    ui->inputfilename_2->setGeometry(580,520,160,20);
+    ui->download->setGeometry(270,520,80,20);
+    ui->upload->setGeometry(740,520,80,20);
+    ui->serverinfo->setGeometry(50,80,150,20);
+}
+
+//int main(int argc, char **argv) {
+
+//    if (WSAStartup(MAKEWORD(2, 2), &s) != 0)
+//    {
+//        printf("Init Windows Socket Failed! Error: %d\n", GetLastError());
+//        getchar();
+//        return -1;
+//    }
+//    if (argc == 5)
+//    {
+//        port = atoi(argv[2]);
+//        strcpy(ip_address, argv[4]);
+//    }
+
+//    sockfd = connect_client(ip_address, PORT_NUM);
+//    p = recv(sockfd, sentence, MAXBUF,0);
+//    sentence[p - 1] = '\0';
+//    printf("%s\r\n", sentence);
+
+//    while (1) {
+//        fgets(sentence, 4096, stdin);
+//        len = strlen(sentence);
+//        sentence[len - 1] = '\r';
+//        sentence[len] = '\n';
+//        sentence[len + 1] = '\0';
+//        len = strlen(sentence);
+//        p = 0;
+//        while (p < len) {
+//            int n = send(sockfd, sentence, len,0);
+//            if (n < 0) {
+//                ("Error write(): %s(%d)\n", strerror(errno), errno);
+//                return 1;
+//            }
+//            else {
+//                p += n;
+//                break;
+//            }
+//        }
+//        sentence[p - 2] = '\0';
+//        if (!strncmp(sentence, "PORT", 4)) {
+//            int _port[10];
+//            divide_port(sentence, _port, 5);
+//            PASV_mode = 0;
+//            info.port = _port[4] * 256 + _port[5];
+//            printf("port = %d\r\n", info.port);
+//        }
+//        else if (!strncmp(sentence, "STOR", 4)) {
+//            if (PASV_mode == 0) {
+//                listenfd = connect_server(info.port);
+//                if ((connfd = accept(listenfd, NULL, NULL)) == -1) {
+//                    printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+//                    continue;
+//                }
+//                int n = recv(sockfd, m_sentence, 8191,0);
+//                m_sentence[n - 2] = '\0';
+//                printf("%s\r\n", m_sentence);
+//                get_info(sentence, 5);
+//                fp = fopen(sentence, "rb");
+//                while (!feof(fp)) {
+//                    len = fread(file_contents, 1, sizeof(file_contents), fp);
+//                    n = send(connfd, file_contents, len,0);
+//                }
+//                fclose(fp);
+//                closesocket(listenfd);
+//                closesocket(connfd);
+//            }
+//            else {
+//                m_sockfd = connect_client(info.ip_address, info.port);
+//                int n = recv(sockfd, m_sentence, 8191,0);
+//                m_sentence[n - 2] = '\0';
+//                printf("%s\r\n", m_sentence);
+//                get_info(sentence, 5);
+//                fp = fopen(sentence, "rb");
+//                while (!feof(fp)) {
+//                    len = fread(file_contents, 1, sizeof(file_contents), fp);
+//                    n = send(m_sockfd, file_contents, len,0);
+//                }
+//                fclose(fp);
+//                closesocket(m_sockfd);
+//            }
+//        }
+//        else if (!strncmp(sentence, "RETR", 4)) {
+//            if (PASV_mode == 0) {
+//                listenfd = connect_server(info.port);
+//                if ((connfd = accept(listenfd, NULL, NULL)) == -1) {
+//                    printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+//                    continue;
+//                }
+//                int n = recv(sockfd, m_sentence, MAXBUF,0);
+//                m_sentence[n - 2] = '\0';
+//                printf("%s\r\n", m_sentence);
+//                get_info(sentence, 5);
+//                fp = fopen(sentence, "wb");
+//                while (1) {
+//                    n = recv(connfd, file_contents, 8192,0);
+//                    if (n == 0) {
+//                        break;
+//                    }
+//                    fwrite(file_contents, 1, n, fp);
+//                }
+//                fclose(fp);
+//                closesocket(listenfd);
+//                closesocket(connfd);
+//            }
+//            else {
+//                m_sockfd = connect_client(info.ip_address, info.port);
+//                int n = recv(sockfd, m_sentence, 8191,0);
+//                m_sentence[n - 2] = '\0';
+//                printf("%s\r\n", m_sentence);
+//                get_info(sentence, 5);
+//                printf("filename:%s", sentence);
+//                fp = fopen(sentence, "wb");
+//                while (1) {
+//                    n = recv(m_sockfd, file_contents, 8192,0);
+//                    if (n == 0) {
+//                        break;
+//                    }
+//                    fwrite(file_contents, 1, n, fp);
+//                }
+//                printf("good\n");
+//                fclose(fp);
+//                closesocket(m_sockfd);
+//            }
+//        }
+//        else if (!strncmp(sentence, "LIST", 4)) {
+//            if (PASV_mode == 0) {
+//                listenfd = connect_server(info.port);
+//                if ((connfd = accept(listenfd, NULL, NULL)) == -1) {
+//                    printf("Error accept(): %s(%d)\n", strerror(errno), errno);
+//                    continue;
+//                }
+//                while (1) {
+//                    memset(sentence, 0, sizeof(sentence));
+//                    int n = recv(connfd, sentence, 8192,0);
+//                    if (n == 0) {
+//                        memset(sentence, 0, sizeof(sentence));
+//                        break;
+//                    }
+//                    printf("%s\r", sentence);
+//                }
+//                closesocket(listenfd);
+//                closesocket(connfd);
+//            }
+//            else {
+//                m_sockfd = connect_client(info.ip_address, info.port);
+//                while (1) {
+//                    memset(sentence, 0, sizeof(sentence));
+//                    int n = recv(m_sockfd, sentence, 8192,0);
+//                    if (n == 0) {
+//                        memset(sentence, 0, sizeof(sentence));
+//                        break;
+//                    }
+//                    printf("%s\r", sentence);
+//                }
+//                int n = recv(sockfd, m_sentence, 8191, 0);
+//                m_sentence[n - 2] = '\0';
+//                printf("%s\r\n", m_sentence);
+//                closesocket(m_sockfd);
+//            }
+//        }
+
+
+//        p = 0;
+//        while (1) {
+//            int n = recv(sockfd, sentence, 8191,0);
+//            if (n < 0) {
+//                printf("Error read(): %s(%d)\n", strerror(errno), errno);
+//                return 1;
+//            }
+//            else {
+//                p += n;
+//                break;
+//            }
+//        }
+//        sentence[p - 2] = '\0';
+//        printf("he:%s\r\n", sentence);
+//        if (!strncmp(sentence, "227", 3)) {
+//            memset(info.ip_address, 0, sizeof(info.ip_address));
+//            char ip[100];
+//            int _port[10];
+//            get_info(sentence, 26);
+//            printf("1\n");
+//            divide_port(sentence, _port, 1);
+//            for (int i = 0; i < 3; i++) {
+//                sprintf(ip, "%d", _port[i]);
+//                strcat(info.ip_address, ip);
+//                strcat(info.ip_address, ".");
+//                memset(ip, 0, sizeof(ip));
+//            }
+//            printf("2\n");
+//            sprintf(ip, "%d", _port[3]);
+//            strcat(info.ip_address, ip);
+//            PASV_mode = 1;
+//            info.port = _port[4] * 256 + _port[5];
+//            printf("ip_address = %s \r\nport = %d\r\n", info.ip_address, info.port);
+//        }
+//        else if (!strncmp(sentence, "221", 3)) {
+//            closesocket(sockfd);
+//            return 0;
+//        }
+//    }
+//}
+
+
+
+void MainWindow::on_upload_clicked()
+{
+
+}
+
+void MainWindow::on_download_clicked()
+{
+    char* filename_download;
+    char temp[1000] = {"RETR "};
+    strcat(temp,filename_download)
+    filename_download = ui->inputfilename->text().toLatin1().data();
+    send_message(sockfd,"PASV");
+    send_message(sockfd,strcat("RETR ",filename_download));
+}
